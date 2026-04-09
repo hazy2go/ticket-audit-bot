@@ -1,0 +1,19 @@
+{
+  "name": "ticket-audit-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Discord probe that audits ticket channels for owner-leak vectors",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "once": "AUDIT_ONCE=1 node index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
+  }
+}
