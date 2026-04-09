@@ -47,14 +47,18 @@ const client = new Client({
   ],
 });
 
+// A channel is a "ticket" if its NAME looks like a ticket. Category alone
+// is too loose — e.g. #🙋｜support lives in a SUPPORT category but isn't a
+// ticket. Matches:  ticket-*, support-*, modmail-*, pure digits, <digits>-*
+const TICKET_NAME_RE =
+  /^(ticket|support|modmail)[-_]|^\d+([-_]|$)/i;
+
 const isTicketChannel = (ch) => {
   if (ch.type !== ChannelType.GuildText) return false;
   if (categoryAllowlist.size > 0) {
-    return ch.parentId && categoryAllowlist.has(ch.parentId);
+    return Boolean(ch.parentId && categoryAllowlist.has(ch.parentId));
   }
-  const parentName = ch.parent?.name?.toLowerCase() ?? '';
-  if (/(ticket|support|modmail)/i.test(parentName)) return true;
-  return /^(ticket|support)[-_]/i.test(ch.name);
+  return TICKET_NAME_RE.test(ch.name);
 };
 
 async function runAudit() {
