@@ -62,9 +62,14 @@ async function runAudit() {
   const report = {
     startedAt,
     tickets: 0,
-    v1: { leaky: 0, total: 0, samples: [] },
+    v1: { leaky: 0, total: 0, samples: [], clean: [] },
     v2: { roles: [] },
-    v3: { userTargeted: 0, roleTargeted: 0 },
+    v3: {
+      userTargeted: 0,
+      roleTargeted: 0,
+      createUserOverwrites: 0,
+      createRoleOverwrites: 0,
+    },
     v4: { sampled: 0, leaks: 0 },
     v5: { categories: [] },
   };
@@ -96,6 +101,8 @@ async function runAudit() {
           owners: userOverwrites.map((o) => o.id),
         });
       }
+    } else {
+      report.v1.clean.push(`#${ch.name} (${ch.id})`);
     }
   }
 
@@ -105,18 +112,45 @@ async function runAudit() {
     .map((r) => ({ name: r.name, id: r.id, members: r.members.size }));
 
   // ─── [3] recent audit log overwrite entries ────────────────────────────
+  // Two paths leak owners via audit log:
+  //   (a) CHANNEL_OVERWRITE_CREATE with target_type=member
+  //   (b) CHANNEL_CREATE with embedded permission_overwrites — bots that
+  //       create a channel + overwrites in one API call take this path
+  //       instead of firing separate overwrite events.
   try {
-    const logs = await guild.fetchAuditLogs({
+    const overwriteLogs = await guild.fetchAuditLogs({
       type: AuditLogEvent.ChannelOverwriteCreate,
       limit: 100,
     });
-    for (const entry of logs.entries.values()) {
+    for (const entry of overwriteLogs.entries.values()) {
       const t = entry.extra?.type;
       if (t === '1' || t === 1) report.v3.userTargeted++;
       else if (t === '0' || t === 0) report.v3.roleTargeted++;
     }
   } catch (err) {
-    console.warn('[v3] audit log fetch failed:', err.message);
+    console.warn('[v3a] overwrite log fetch failed:', err.message);
+  }
+  try {
+    const createLogs = await guild.fetchAuditLogs({
+      type: AuditLogEvent.ChannelCreate,
+      limit: 100,
+    });
+    for (const entry of createLogs.entries.values()) {
+      // only count channels that landed in a ticket category
+      const createdChannel = guild.channels.cache.get(entry.targetId);
+      if (!createdChannel || !isTicketChannel(createdChannel)) continue;
+      const owChange = entry.changes?.find(
+        (c) => c.key === 'permission_overwrites',
+      );
+      const overwrites = owChange?.new ?? [];
+      for (const ow of overwrites) {
+        // type 1 = member, 0 = role (same scheme as channel overwrites)
+        if (ow.type === 1 || ow.type === '1') report.v3.createUserOverwrites++;
+        else if (ow.type === 0 || ow.type === '0') report.v3.createRoleOverwrites++;
+      }
+    }
+  } catch (err) {
+    console.warn('[v3b] channel-create log fetch failed:', err.message);
   }
 
   // ─── [4] first-message @mention leak (sample up to 25) ────────────────
@@ -148,7 +182,11 @@ function printReport(r) {
 
   console.log(`[1] user-type overwrites: ${r.v1.leaky}/${r.v1.total}`);
   for (const s of r.v1.samples) {
-    console.log(`    ${s.channel} → ${s.owners.join(', ')}`);
+    console.log(`    LEAK ${s.channel} → ${s.owners.join(', ')}`);
+  }
+  if (r.v1.clean.length > 0) {
+    console.log(`    clean channels:`);
+    for (const c of r.v1.clean) console.log(`      ${c}`);
   }
 
   console.log(`\n[2] roles with VIEW_AUDIT_LOG: ${r.v2.roles.length}`);
@@ -157,7 +195,7 @@ function printReport(r) {
   }
 
   console.log(
-    `\n[3] recent overwrite audit entries: user=${r.v3.userTargeted}, role=${r.v3.roleTargeted}`,
+    `\n[3] audit log leak paths:\n    overwrite_create events: user=${r.v3.userTargeted}, role=${r.v3.roleTargeted}\n    channel_create embedded:  user=${r.v3.createUserOverwrites}, role=${r.v3.createRoleOverwrites}`,
   );
 
   console.log(
@@ -173,7 +211,9 @@ function printReport(r) {
 
 function buildEmbed(r) {
   const severity =
-    r.v1.leaky > 0 || r.v3.userTargeted > 0
+    r.v1.leaky > 0 ||
+    r.v3.userTargeted > 0 ||
+    r.v3.createUserOverwrites > 0
       ? 0xff4d4f
       : r.v4.leaks > 0 || r.v2.roles.length > 3
       ? 0xfaad14
@@ -209,8 +249,10 @@ function buildEmbed(r) {
                 .join('\n'),
       },
       {
-        name: '[3] Recent overwrite audit entries',
-        value: `user-target: **${r.v3.userTargeted}** · role-target: **${r.v3.roleTargeted}**`,
+        name: '[3] Audit log leak paths',
+        value:
+          `overwrite_create: user **${r.v3.userTargeted}** · role **${r.v3.roleTargeted}**\n` +
+          `channel_create embedded: user **${r.v3.createUserOverwrites}** · role **${r.v3.createRoleOverwrites}**`,
       },
       {
         name: '[4] First-message mention leak',
