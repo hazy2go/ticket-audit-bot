@@ -72,6 +72,12 @@ async function runAudit() {
   const guild = await client.guilds.fetch(GUILD_ID);
   await guild.channels.fetch();
   await guild.roles.fetch();
+  // needed so role.members.size is accurate in vector [2]
+  try {
+    await guild.members.fetch();
+  } catch (err) {
+    console.warn('members fetch failed (enable Server Members Intent):', err.message);
+  }
 
   const tickets = [...guild.channels.cache.values()].filter(isTicketChannel);
   report.tickets = tickets.length;
@@ -243,7 +249,7 @@ async function runAndReport() {
   }
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`logged in as ${client.user.tag}`);
   await runAndReport();
 
